@@ -1,14 +1,24 @@
-set shell := ["bash", "-euo", "pipefail", "-c"]
+# List available commands.
+default:
+    @just --list
 
-app_name := "Audio Switcher"
-project := "Audio Switcher.xcodeproj"
-scheme := "Audio Switcher"
-derived_data := "build"
-
+# Build dist/Audio Switcher.app.
 build:
-    xcodebuild -project "{{project}}" -scheme "{{scheme}}" -configuration Release -derivedDataPath "{{derived_data}}" build
+    bash scripts/build-app.sh
 
+# Build, install in /Applications, and restart the app.
 install: build
-    sudo rm -rf "/Applications/{{app_name}}.app"
-    sudo ditto "{{derived_data}}/Build/Products/Release/{{app_name}}.app" "/Applications/{{app_name}}.app"
-    @echo "Installed /Applications/{{app_name}}.app"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    destination="/Applications/Audio Switcher.app"
+    if [[ -w /Applications && ( ! -e "$destination" || -w "$destination" ) ]]; then
+        rm -rf "$destination"
+        ditto "dist/Audio Switcher.app" "$destination"
+    else
+        sudo rm -rf "$destination"
+        sudo ditto "dist/Audio Switcher.app" "$destination"
+    fi
+    echo "Installed $destination"
+    pkill -x "Audio Switcher" || true
+    sleep 1
+    open "$destination"
