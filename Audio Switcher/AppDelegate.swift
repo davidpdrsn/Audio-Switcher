@@ -7,6 +7,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
 
+    private let warningDot: NSView = {
+        let dot = NSView()
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = NSColor.systemRed.cgColor
+        dot.layer?.cornerRadius = 3
+        dot.isHidden = true
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        return dot
+    }()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -21,6 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.toolTip = "Audio Switcher"
         statusItem.menu = menu
+
+        if let button = statusItem.button {
+            button.addSubview(warningDot)
+
+            // Pin the dot to the top-right corner of the speaker icon, which is centered in the button.
+            NSLayoutConstraint.activate([
+                warningDot.widthAnchor.constraint(equalToConstant: 6),
+                warningDot.heightAnchor.constraint(equalToConstant: 6),
+                warningDot.centerXAnchor.constraint(equalTo: button.centerXAnchor, constant: 8),
+                warningDot.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: -5),
+            ])
+        }
     }
 
     private func setupObservers() {
@@ -31,6 +53,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         menu.removeAllItems()
+
+        let mutedInput = mutedBlackHoleInput()
+        warningDot.isHidden = mutedInput == nil
+
+        if let mutedInput {
+            addUnmuteItem(for: mutedInput)
+            menu.addItem(.separator())
+        }
 
         addSectionHeader("Inputs")
         addInputItems()
@@ -62,6 +92,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+    }
+
+    private func mutedBlackHoleInput() -> AudioDevice? {
+        guard
+            let defaultInputID = audioDeviceManager.defaultInputDeviceID(),
+            let device = audioDeviceManager.inputDevices().first(where: { $0.id == defaultInputID }),
+            device.name.localizedCaseInsensitiveContains("BlackHole"),
+            audioDeviceManager.isInputMuted(deviceID: device.id)
+        else {
+            return nil
+        }
+
+        return device
+    }
+
+    private func addUnmuteItem(for device: AudioDevice) {
+        let item = NSMenuItem(title: "Unmute \(device.name)", action: #selector(unmuteInput(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = NSNumber(value: device.id)
+        menu.addItem(item)
     }
 
     private func addInputItems() {
@@ -112,6 +162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func selectOutput(_ sender: NSMenuItem) {
         guard let number = sender.representedObject as? NSNumber else { return }
         audioDeviceManager.setDefaultOutputDevice(number.uint32Value)
+    }
+
+    @objc private func unmuteInput(_ sender: NSMenuItem) {
+        guard let number = sender.representedObject as? NSNumber else { return }
+        audioDeviceManager.unmuteInput(deviceID: number.uint32Value)
+        rebuildMenu()
     }
 
     @objc private func toggleLaunchAtLogin() {

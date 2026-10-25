@@ -11,6 +11,7 @@ final class AudioDeviceManager {
 
     private let listenerQueue = DispatchQueue.main
     private var listenerBlock: AudioObjectPropertyListenerBlock?
+    private var muteListenerDeviceID: AudioObjectID?
 
     init() {
         startListening()
@@ -52,6 +53,39 @@ final class AudioDeviceManager {
 
     func setDefaultOutputDevice(_ deviceID: AudioObjectID) {
         setDefaultDevice(deviceID, selector: kAudioHardwarePropertyDefaultOutputDevice)
+    }
+
+    func isInputMuted(deviceID: AudioObjectID) -> Bool {
+        let muted = readUInt32Property(
+            objectID: deviceID,
+            selector: kAudioDevicePropertyMute,
+            scope: kAudioObjectPropertyScopeInput,
+            element: kAudioObjectPropertyElementMain
+        )
+
+        return muted == 1
+    }
+
+    func unmuteInput(deviceID: AudioObjectID) {
+        var muted: UInt32 = 0
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let status = AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &muted
+        )
+
+        if status != noErr {
+            NSLog("Failed to unmute audio input device %u, status: %d", deviceID, status)
+        }
     }
 
     private func allDevices() -> [AudioDevice] {
@@ -158,6 +192,7 @@ final class AudioDeviceManager {
 
     private func startListening() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.updateInputMuteListener()
             self?.onDevicesChanged?()
         }
 
@@ -166,6 +201,7 @@ final class AudioDeviceManager {
         addListener(selector: kAudioHardwarePropertyDevices, block: block)
         addListener(selector: kAudioHardwarePropertyDefaultInputDevice, block: block)
         addListener(selector: kAudioHardwarePropertyDefaultOutputDevice, block: block)
+        updateInputMuteListener()
     }
 
     private func stopListening() {
@@ -175,18 +211,57 @@ final class AudioDeviceManager {
         removeListener(selector: kAudioHardwarePropertyDefaultInputDevice, block: block)
         removeListener(selector: kAudioHardwarePropertyDefaultOutputDevice, block: block)
 
+        if let deviceID = muteListenerDeviceID {
+            removeListener(objectID: deviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput, block: block)
+            muteListenerDeviceID = nil
+        }
+
         listenerBlock = nil
     }
 
-    private func addListener(selector: AudioObjectPropertySelector, block: @escaping AudioObjectPropertyListenerBlock) {
+    // The mute state lives on the device rather than the system object, so the listener has to
+    // follow whichever device is currently the default input.
+    private func updateInputMuteListener() {
+        guard let block = listenerBlock else { return }
+
+        let deviceID = defaultInputDeviceID()
+        guard deviceID != muteListenerDeviceID else { return }
+
+        if let oldDeviceID = muteListenerDeviceID {
+            removeListener(objectID: oldDeviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput, block: block)
+            muteListenerDeviceID = nil
+        }
+
+        if let deviceID, hasProperty(objectID: deviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput) {
+            addListener(objectID: deviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput, block: block)
+            muteListenerDeviceID = deviceID
+        }
+    }
+
+    private func hasProperty(objectID: AudioObjectID, selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        return AudioObjectHasProperty(objectID, &address)
+    }
+
+    private func addListener(
+        objectID: AudioObjectID = AudioObjectID(kAudioObjectSystemObject),
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+        block: @escaping AudioObjectPropertyListenerBlock
+    ) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
 
         let status = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
+            objectID,
             &address,
             listenerQueue,
             block
@@ -197,15 +272,20 @@ final class AudioDeviceManager {
         }
     }
 
-    private func removeListener(selector: AudioObjectPropertySelector, block: @escaping AudioObjectPropertyListenerBlock) {
+    private func removeListener(
+        objectID: AudioObjectID = AudioObjectID(kAudioObjectSystemObject),
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+        block: @escaping AudioObjectPropertyListenerBlock
+    ) {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
 
         let status = AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
+            objectID,
             &address,
             listenerQueue,
             block
