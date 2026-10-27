@@ -54,11 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildMenu() {
         menu.removeAllItems()
 
-        let mutedInput = mutedBlackHoleInput()
-        warningDot.isHidden = mutedInput == nil
+        let warningItems = blackHoleWarningItems()
+        warningDot.isHidden = warningItems.isEmpty
 
-        if let mutedInput {
-            addUnmuteItem(for: mutedInput)
+        if !warningItems.isEmpty {
+            for item in warningItems {
+                menu.addItem(item)
+            }
             menu.addItem(.separator())
         }
 
@@ -94,24 +96,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
     }
 
-    private func mutedBlackHoleInput() -> AudioDevice? {
+    // BlackHole sometimes comes back muted or with a lowered input level, usually after a reboot.
+    private func blackHoleWarningItems() -> [NSMenuItem] {
         guard
             let defaultInputID = audioDeviceManager.defaultInputDeviceID(),
             let device = audioDeviceManager.inputDevices().first(where: { $0.id == defaultInputID }),
-            device.name.localizedCaseInsensitiveContains("BlackHole"),
-            audioDeviceManager.isInputMuted(deviceID: device.id)
+            device.name.localizedCaseInsensitiveContains("BlackHole")
         else {
-            return nil
+            return []
         }
 
-        return device
+        var items: [NSMenuItem] = []
+
+        if audioDeviceManager.isInputMuted(deviceID: device.id) {
+            items.append(deviceActionItem(title: "Unmute \(device.name)", action: #selector(unmuteInput(_:)), device: device))
+        }
+
+        if let volume = audioDeviceManager.inputVolume(deviceID: device.id) {
+            let percent = Int((volume * 100).rounded())
+            if percent < 100 {
+                items.append(deviceActionItem(
+                    title: "Set \(device.name) Input Level to 100% (now \(percent)%)",
+                    action: #selector(setFullInputVolume(_:)),
+                    device: device
+                ))
+            }
+        }
+
+        return items
     }
 
-    private func addUnmuteItem(for device: AudioDevice) {
-        let item = NSMenuItem(title: "Unmute \(device.name)", action: #selector(unmuteInput(_:)), keyEquivalent: "")
+    private func deviceActionItem(title: String, action: Selector, device: AudioDevice) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         item.representedObject = NSNumber(value: device.id)
-        menu.addItem(item)
+        return item
     }
 
     private func addInputItems() {
@@ -167,6 +186,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func unmuteInput(_ sender: NSMenuItem) {
         guard let number = sender.representedObject as? NSNumber else { return }
         audioDeviceManager.unmuteInput(deviceID: number.uint32Value)
+        rebuildMenu()
+    }
+
+    @objc private func setFullInputVolume(_ sender: NSMenuItem) {
+        guard let number = sender.representedObject as? NSNumber else { return }
+        audioDeviceManager.setInputVolume(1, deviceID: number.uint32Value)
         rebuildMenu()
     }
 

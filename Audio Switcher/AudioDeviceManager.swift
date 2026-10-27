@@ -11,7 +11,10 @@ final class AudioDeviceManager {
 
     private let listenerQueue = DispatchQueue.main
     private var listenerBlock: AudioObjectPropertyListenerBlock?
-    private var muteListenerDeviceID: AudioObjectID?
+    private var inputListenerDeviceID: AudioObjectID?
+
+    // Input properties observed on the default input device.
+    private static let inputDeviceSelectors = [kAudioDevicePropertyMute, kAudioDevicePropertyVolumeScalar]
 
     init() {
         startListening()
@@ -85,6 +88,38 @@ final class AudioDeviceManager {
 
         if status != noErr {
             NSLog("Failed to unmute audio input device %u, status: %d", deviceID, status)
+        }
+    }
+
+    /// The input level from 0 to 1, or nil when the device has no input level control.
+    func inputVolume(deviceID: AudioObjectID) -> Float32? {
+        readFloat32Property(
+            objectID: deviceID,
+            selector: kAudioDevicePropertyVolumeScalar,
+            scope: kAudioObjectPropertyScopeInput,
+            element: kAudioObjectPropertyElementMain
+        )
+    }
+
+    func setInputVolume(_ volume: Float32, deviceID: AudioObjectID) {
+        var mutableVolume = volume
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let status = AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float32>.size),
+            &mutableVolume
+        )
+
+        if status != noErr {
+            NSLog("Failed to set input volume of audio device %u, status: %d", deviceID, status)
         }
     }
 
@@ -192,7 +227,7 @@ final class AudioDeviceManager {
 
     private func startListening() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.updateInputMuteListener()
+            self?.updateInputDeviceListeners()
             self?.onDevicesChanged?()
         }
 
@@ -201,7 +236,7 @@ final class AudioDeviceManager {
         addListener(selector: kAudioHardwarePropertyDevices, block: block)
         addListener(selector: kAudioHardwarePropertyDefaultInputDevice, block: block)
         addListener(selector: kAudioHardwarePropertyDefaultOutputDevice, block: block)
-        updateInputMuteListener()
+        updateInputDeviceListeners()
     }
 
     private func stopListening() {
@@ -211,30 +246,44 @@ final class AudioDeviceManager {
         removeListener(selector: kAudioHardwarePropertyDefaultInputDevice, block: block)
         removeListener(selector: kAudioHardwarePropertyDefaultOutputDevice, block: block)
 
-        if let deviceID = muteListenerDeviceID {
-            removeListener(objectID: deviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput, block: block)
-            muteListenerDeviceID = nil
+        if let deviceID = inputListenerDeviceID {
+            removeInputDeviceListeners(deviceID: deviceID, block: block)
+            inputListenerDeviceID = nil
         }
 
         listenerBlock = nil
     }
 
-    // The mute state lives on the device rather than the system object, so the listener has to
-    // follow whichever device is currently the default input.
-    private func updateInputMuteListener() {
+    // Mute and input level live on the device rather than the system object, so these listeners
+    // have to follow whichever device is currently the default input.
+    private func updateInputDeviceListeners() {
         guard let block = listenerBlock else { return }
 
         let deviceID = defaultInputDeviceID()
-        guard deviceID != muteListenerDeviceID else { return }
+        guard deviceID != inputListenerDeviceID else { return }
 
-        if let oldDeviceID = muteListenerDeviceID {
-            removeListener(objectID: oldDeviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput, block: block)
-            muteListenerDeviceID = nil
+        if let oldDeviceID = inputListenerDeviceID {
+            removeInputDeviceListeners(deviceID: oldDeviceID, block: block)
+            inputListenerDeviceID = nil
         }
 
-        if let deviceID, hasProperty(objectID: deviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput) {
-            addListener(objectID: deviceID, selector: kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeInput, block: block)
-            muteListenerDeviceID = deviceID
+        if let deviceID {
+            addInputDeviceListeners(deviceID: deviceID, block: block)
+            inputListenerDeviceID = deviceID
+        }
+    }
+
+    private func addInputDeviceListeners(deviceID: AudioObjectID, block: @escaping AudioObjectPropertyListenerBlock) {
+        for selector in Self.inputDeviceSelectors
+        where hasProperty(objectID: deviceID, selector: selector, scope: kAudioObjectPropertyScopeInput) {
+            addListener(objectID: deviceID, selector: selector, scope: kAudioObjectPropertyScopeInput, block: block)
+        }
+    }
+
+    private func removeInputDeviceListeners(deviceID: AudioObjectID, block: @escaping AudioObjectPropertyListenerBlock) {
+        for selector in Self.inputDeviceSelectors
+        where hasProperty(objectID: deviceID, selector: selector, scope: kAudioObjectPropertyScopeInput) {
+            removeListener(objectID: deviceID, selector: selector, scope: kAudioObjectPropertyScopeInput, block: block)
         }
     }
 
@@ -319,6 +368,20 @@ final class AudioDeviceManager {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: element)
         var value: UInt32 = 0
         var dataSize = UInt32(MemoryLayout<UInt32>.size)
+
+        let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &dataSize, &value)
+        return status == noErr ? value : nil
+    }
+
+    private func readFloat32Property(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope,
+        element: AudioObjectPropertyElement
+    ) -> Float32? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: element)
+        var value: Float32 = 0
+        var dataSize = UInt32(MemoryLayout<Float32>.size)
 
         let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &dataSize, &value)
         return status == noErr ? value : nil
