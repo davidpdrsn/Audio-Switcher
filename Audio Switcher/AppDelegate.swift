@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         setupObservers()
+        restoreBlackHoleInput()
         rebuildMenu()
     }
 
@@ -47,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupObservers() {
         audioDeviceManager.onDevicesChanged = { [weak self] in
+            self?.restoreBlackHoleInput()
             self?.rebuildMenu()
         }
     }
@@ -96,15 +98,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
     }
 
-    // BlackHole sometimes comes back muted or with a lowered input level, usually after a reboot.
-    private func blackHoleWarningItems() -> [NSMenuItem] {
+    private func defaultBlackHoleInput() -> AudioDevice? {
         guard
             let defaultInputID = audioDeviceManager.defaultInputDeviceID(),
             let device = audioDeviceManager.inputDevices().first(where: { $0.id == defaultInputID }),
             device.name.localizedCaseInsensitiveContains("BlackHole")
         else {
-            return []
+            return nil
         }
+
+        return device
+    }
+
+    private func inputPercent(of device: AudioDevice) -> Int? {
+        audioDeviceManager.inputVolume(deviceID: device.id).map { Int(($0 * 100).rounded()) }
+    }
+
+    // BlackHole sometimes comes back muted or with a lowered input level, usually after a reboot.
+    private func restoreBlackHoleInput() {
+        guard let device = defaultBlackHoleInput() else { return }
+
+        if audioDeviceManager.isInputMuted(deviceID: device.id) {
+            audioDeviceManager.unmuteInput(deviceID: device.id)
+        }
+
+        if let percent = inputPercent(of: device), percent < 100 {
+            audioDeviceManager.setInputVolume(1, deviceID: device.id)
+        }
+    }
+
+    // Only has anything to show when restoreBlackHoleInput() didn't manage to fix the device.
+    private func blackHoleWarningItems() -> [NSMenuItem] {
+        guard let device = defaultBlackHoleInput() else { return [] }
 
         var items: [NSMenuItem] = []
 
@@ -112,15 +137,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             items.append(deviceActionItem(title: "Unmute \(device.name)", action: #selector(unmuteInput(_:)), device: device))
         }
 
-        if let volume = audioDeviceManager.inputVolume(deviceID: device.id) {
-            let percent = Int((volume * 100).rounded())
-            if percent < 100 {
-                items.append(deviceActionItem(
-                    title: "Set \(device.name) Input Level to 100% (now \(percent)%)",
-                    action: #selector(setFullInputVolume(_:)),
-                    device: device
-                ))
-            }
+        if let percent = inputPercent(of: device), percent < 100 {
+            items.append(deviceActionItem(
+                title: "Set \(device.name) Input Level to 100% (now \(percent)%)",
+                action: #selector(setFullInputVolume(_:)),
+                device: device
+            ))
         }
 
         return items
