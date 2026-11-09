@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         setupObservers()
-        switchToBlackHoleIfScarlettConnected()
+        updateInputForScarlett()
         restoreBlackHoleInput()
         rebuildMenu()
     }
@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupObservers() {
         audioDeviceManager.onDevicesChanged = { [weak self] in
-            self?.switchToBlackHoleIfScarlettConnected()
+            self?.updateInputForScarlett()
             self?.restoreBlackHoleInput()
             self?.rebuildMenu()
         }
@@ -117,23 +117,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioDeviceManager.inputVolume(deviceID: device.id).map { Int(($0 * 100).rounded()) }
     }
 
-    // Use BlackHole as the input when the Scarlett is connected. Checked when the Scarlett shows up and
+    // Use BlackHole as the input while the Scarlett is connected. Checked when the Scarlett shows up and
     // whenever it becomes the default input, since macOS tends to select it right after it's plugged in.
-    private func switchToBlackHoleIfScarlettConnected() {
+    // When the Scarlett goes away, switch from BlackHole back to the MacBook microphone.
+    private func updateInputForScarlett() {
         let inputs = audioDeviceManager.inputDevices()
+        let defaultInputID = audioDeviceManager.defaultInputDeviceID()
+        let blackHole = inputs.first(where: { $0.name.localizedCaseInsensitiveContains("BlackHole") })
 
         guard let scarlett = inputs.first(where: { $0.name.localizedCaseInsensitiveContains("Scarlett") }) else {
+            let justDisconnected = isScarlettConnected
             isScarlettConnected = false
+
+            guard
+                justDisconnected,
+                defaultInputID == blackHole?.id,
+                let macBookMic = inputs.first(where: { $0.name.localizedCaseInsensitiveContains("MacBook") })
+            else {
+                return
+            }
+
+            audioDeviceManager.setDefaultInputDevice(macBookMic.id)
             return
         }
 
         let justConnected = !isScarlettConnected
         isScarlettConnected = true
 
-        let defaultInputID = audioDeviceManager.defaultInputDeviceID()
         guard
             justConnected || defaultInputID == scarlett.id,
-            let blackHole = inputs.first(where: { $0.name.localizedCaseInsensitiveContains("BlackHole") }),
+            let blackHole,
             defaultInputID != blackHole.id
         else {
             return
