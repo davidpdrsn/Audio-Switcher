@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
+    private var isScarlettConnected = false
 
     private let warningDot: NSView = {
         let dot = NSView()
@@ -22,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         setupObservers()
+        switchToBlackHoleIfScarlettConnected()
         restoreBlackHoleInput()
         rebuildMenu()
     }
@@ -48,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupObservers() {
         audioDeviceManager.onDevicesChanged = { [weak self] in
+            self?.switchToBlackHoleIfScarlettConnected()
             self?.restoreBlackHoleInput()
             self?.rebuildMenu()
         }
@@ -112,6 +115,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func inputPercent(of device: AudioDevice) -> Int? {
         audioDeviceManager.inputVolume(deviceID: device.id).map { Int(($0 * 100).rounded()) }
+    }
+
+    // Use BlackHole as the input when the Scarlett is connected. Checked when the Scarlett shows up and
+    // whenever it becomes the default input, since macOS tends to select it right after it's plugged in.
+    private func switchToBlackHoleIfScarlettConnected() {
+        let inputs = audioDeviceManager.inputDevices()
+
+        guard let scarlett = inputs.first(where: { $0.name.localizedCaseInsensitiveContains("Scarlett") }) else {
+            isScarlettConnected = false
+            return
+        }
+
+        let justConnected = !isScarlettConnected
+        isScarlettConnected = true
+
+        let defaultInputID = audioDeviceManager.defaultInputDeviceID()
+        guard
+            justConnected || defaultInputID == scarlett.id,
+            let blackHole = inputs.first(where: { $0.name.localizedCaseInsensitiveContains("BlackHole") }),
+            defaultInputID != blackHole.id
+        else {
+            return
+        }
+
+        audioDeviceManager.setDefaultInputDevice(blackHole.id)
     }
 
     // BlackHole sometimes comes back muted or with a lowered input level, usually after a reboot.

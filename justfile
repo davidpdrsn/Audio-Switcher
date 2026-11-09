@@ -19,6 +19,13 @@ install: build
         sudo ditto "dist/Audio Switcher.app" "$destination"
     fi
     echo "Installed $destination"
-    pkill -x "Audio Switcher" || true
-    sleep 1
+    # Wait for the old instance to exit, otherwise `open` just activates it instead of launching the new build.
+    if pkill -x "Audio Switcher"; then
+        for _ in {1..50}; do
+            pgrep -x "Audio Switcher" > /dev/null || break
+            sleep 0.1
+        done
+        pkill -9 -x "Audio Switcher" || true
+    fi
     open "$destination"
+    echo "Restarted Audio Switcher"
